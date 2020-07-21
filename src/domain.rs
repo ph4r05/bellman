@@ -101,6 +101,7 @@ impl<E: ScalarEngine, G: Group<E>> EvaluationDomain<E, G> {
         });
     }
 
+    //! Computes v_i * g^i
     pub fn distribute_powers(&mut self, worker: &Worker, g: E::Fr) {
         worker.scope(self.coeffs.len(), |scope, chunk| {
             for (i, v) in self.coeffs.chunks_mut(chunk).enumerate() {
@@ -115,6 +116,8 @@ impl<E: ScalarEngine, G: Group<E>> EvaluationDomain<E, G> {
         });
     }
 
+    /// FFT(A(g*x)) = FFT(A(X)) * g^i
+    /// FFT(a_i * g^i), g = generator
     pub fn coset_fft(&mut self, worker: &Worker) {
         self.distribute_powers(worker, E::Fr::multiplicative_generator());
         self.fft(worker);
@@ -127,8 +130,13 @@ impl<E: ScalarEngine, G: Group<E>> EvaluationDomain<E, G> {
         self.distribute_powers(worker, geninv);
     }
 
+    /// `t(x) = (x-r_1) * (x-r_2) * ... * (r-r_m)`, order is m.
+    /// `t(tau) = (tau-r_1) * ... * (tau-r_m)`, eval poly in FFT domain.
+    /// r_i = u_m^i, i.e., our points are m-th roots of unity! A, B, C are also evaluated
+    /// in these points.
+    ///
     /// This evaluates t(tau) for this domain, which is
-    /// tau^m - 1 for these radix-2 domains.
+    /// tau^m - 1 for these radix-2 domains. (t*2^s + 1 = prime for F), radix 2 = 2^m
     pub fn z(&self, tau: &E::Fr) -> E::Fr {
         let mut tmp = tau.pow(&[self.coeffs.len() as u64]);
         tmp.sub_assign(&E::Fr::one());
@@ -139,6 +147,19 @@ impl<E: ScalarEngine, G: Group<E>> EvaluationDomain<E, G> {
     /// The target polynomial is the zero polynomial in our
     /// evaluation domain, so we must perform division over
     /// a coset.
+    /// `FFT(z(x)) = [0,0,0,0,...,0]` as
+    /// `z(x) = \prod (x - u_n^i) = x^m - 1`,
+    /// FFT = eval in `u_m^i`, thus zero in all points.
+    ///
+    /// Originally C(x)/z(x) would be FFT(C) / FFT(Z), but this would yield
+    /// division by 0.
+    ///
+    /// We thus do FFT(C(gx)) / FFT(Z(gx)).
+    /// `Z(gx) = \prod ((gx) - u_m^i) = (gx)^m - 1`
+    /// Thus `FFT(Z(gx)) = [Z(gu_m^1), Z(gu_m^2), ...]`
+    /// which is          `[g^n u_m^1m - 1 = g^m-1, g^mu_m^2m - 1 = g^m-1, ...]`
+    /// thus it is a constant vector of z(g) = g^m - 1
+    /// (as FFT evals in exact points as Z has roots).
     pub fn divide_by_z_on_coset(&mut self, worker: &Worker) {
         let i = self
             .z(&E::Fr::multiplicative_generator())

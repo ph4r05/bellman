@@ -229,16 +229,33 @@ pub struct Parameters<E: Engine> {
 
     // Elements of the form ((tau^i * t(tau)) / delta) for i between 0 and
     // m-2 inclusive. Never contains points at infinity.
+    // for H(x) evaluation, later multiplied by h_i coefficient to get h(tau)*t(tau)/delta
     pub h: Arc<Vec<E::G1Affine>>,
 
     // Elements of the form (beta * u_i(tau) + alpha v_i(tau) + w_i(tau)) / delta
     // for all auxiliary inputs. Variables can never be unconstrained, so this
     // never contains points at infinity.
+    // Aux inputs = l+1 ..< m, later multiplied by corresponding a_i, belongs to C equation.
     pub l: Arc<Vec<E::G1Affine>>,
 
     // QAP "A" polynomials evaluated at tau in the Lagrange basis. Never contains
     // points at infinity: polynomials that evaluate to zero are omitted from
     // the CRS and the prover can deterministically skip their evaluation.
+    // Thus we have density = bitvector saying 1 if eval is non-zero and thus present in the vector
+    // and 0 if eval is zero and not present in the vector (skip eval then).
+    //
+    // *Lagrange basis*
+    // Lagrange basis l_j(x) = \mult (x - x_m)/(x_j - x_m), for 0<=m<k, m!=j, k+1 data points
+    // Lagrange basis l_j(x), l_j(x_i) = 0, for i != j,
+    //                        l_j(x_j) = 1
+    //
+    // Interpolated poly = sum_k y_j * l_j(x)
+    // "A" is multiple polynomials. Number of polynomials = m, number of gates. L, R, O, they
+    // evaluate in r_i, one per each gate to the QAP coefficient.
+    //
+    // We here evaluate each polynomial in tau, (random secret point), testing A*B - C = H*T
+    // at random point.
+    // "A" evaluated at tau "in the Lagrange basis" is probably nothing.
     pub a: Arc<Vec<E::G1Affine>>,
 
     // QAP "B" polynomials evaluated at tau in the Lagrange basis. Needed in

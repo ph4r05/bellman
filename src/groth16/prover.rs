@@ -208,33 +208,49 @@ where
 
     let vk = params.get_vk(prover.input_assignment.len())?;
 
+    //! computation of h(x) quotient: (a(x)*b(x) - c(x)) / z(x)
     let h = {
+        /// prover.a is polynomial a evaluated in m-th roots of unity
         let mut a = EvaluationDomain::from_coeffs(prover.a)?;
         let mut b = EvaluationDomain::from_coeffs(prover.b)?;
         let mut c = EvaluationDomain::from_coeffs(prover.c)?;
+        /// Convert a to polynomial coefficient representation
         a.ifft(&worker);
+        /// Compute `[a_ig^i]_i` representation, which is representation
+        /// for A(g*x) polynomial, then apply FFT (cosets needed so we can divide by z(x))
         a.coset_fft(&worker);
+        /// Same for b, c
         b.ifft(&worker);
         b.coset_fft(&worker);
         c.ifft(&worker);
         c.coset_fft(&worker);
 
+        /// a*b
         a.mul_assign(&worker, &b);
         drop(b);
+        /// a*b-c
         a.sub_assign(&worker, &c);
         drop(c);
+        /// (a*b-c)/z
         a.divide_by_z_on_coset(&worker);
+        /// - Convert to coefficient representation
+        /// - un-coset, `[h_ig^i]_i -> [h_i]_i`
         a.icoset_fft(&worker);
         let mut a = a.into_coeffs();
         let a_len = a.len() - 1;
         a.truncate(a_len);
+        /// a is now `[h_i]_i` = coefficient representation of h(x)
         // TODO: parallelize if it's even helpful
         let a = Arc::new(a.into_iter().map(|s| s.0.into_repr()).collect::<Vec<_>>());
 
+        /// h ~ Elements of the form ((tau^i * t(tau)) / delta) for i between 0 and
+        ///     m-2 inclusive. Never contains points at infinity.
+        /// sum h_i*a_i = sum a_i * tau^i * t(tau) / delta = t(tau)*h(tau)/delta, for C computation
         multiexp(&worker, params.get_h(a.len())?, FullDensity, a)
     };
 
     // TODO: parallelize if it's even helpful
+    /// Convert input_assignment to field elements (from bigint to group)
     let input_assignment = Arc::new(
         prover
             .input_assignment
@@ -250,6 +266,9 @@ where
             .collect::<Vec<_>>(),
     );
 
+    /// get_l() = (beta * u_i(tau) + alpha v_i(tau) + w_i(tau)) / delta, from l+1 to m
+    /// l = \sum get_l_i * a_i, for aux-assignment.
+    /// l is the sum from the C, without h(tau)t(tau) / delta
     let l = multiexp(
         &worker,
         params.get_l(aux_assignment.len())?,
@@ -259,15 +278,19 @@ where
 
     let a_aux_density_total = prover.a_aux_density.get_total_density();
 
+    /// QAP "A" polynomials evaluated at tau in the Lagrange basis.
     let (a_inputs_source, a_aux_source) =
         params.get_a(input_assignment.len(), a_aux_density_total)?;
 
+    /// a_inputs = \sum a_i*u_i(\tau), for input assignment
+    /// density = bitvector, density_i = 0 <-> u_i(tau) = 0, thus skip in multiexp.
     let a_inputs = multiexp(
         &worker,
         a_inputs_source,
         FullDensity,
         input_assignment.clone(),
     );
+    /// a_inputs = \sum a_i*u_i(\tau), for aux assignment
     let a_aux = multiexp(
         &worker,
         a_aux_source,
@@ -313,35 +336,35 @@ where
         return Err(SynthesisError::UnexpectedIdentity);
     }
 
-    let mut g_a = vk.delta_g1.mul(r);
-    g_a.add_assign_mixed(&vk.alpha_g1);
-    let mut g_b = vk.delta_g2.mul(s);
-    g_b.add_assign_mixed(&vk.beta_g2);
+    let mut g_a = vk.delta_g1.mul(r);   // g_a = r \delta
+    g_a.add_assign_mixed(&vk.alpha_g1); // g_a = \alpha + r\delta
+    let mut g_b = vk.delta_g2.mul(s);   // g_b = s \delta
+    g_b.add_assign_mixed(&vk.beta_g2);  // g_b = \beta + s \delta
     let mut g_c;
     {
         let mut rs = r;
-        rs.mul_assign(&s);
+        rs.mul_assign(&s);   // r*s
 
-        g_c = vk.delta_g1.mul(rs);
-        g_c.add_assign(&vk.alpha_g1.mul(s));
-        g_c.add_assign(&vk.beta_g1.mul(r));
+        g_c = vk.delta_g1.mul(rs);           // g_c = rs\delta
+        g_c.add_assign(&vk.alpha_g1.mul(s)); // g_c = rs\delta + \alpha*s
+        g_c.add_assign(&vk.beta_g1.mul(r));  // g_c = rs\delta + \alpha*s + \beta*r
     }
-    let mut a_answer = a_inputs.wait()?;
-    a_answer.add_assign(&a_aux.wait()?);
-    g_a.add_assign(&a_answer);
-    a_answer.mul_assign(s);
-    g_c.add_assign(&a_answer);
+    let mut a_answer = a_inputs.wait()?;  // sum_i a_i * u_i for inputs
+    a_answer.add_assign(&a_aux.wait()?);  // sum_i a_i * u_i for inputs and aux
+    g_a.add_assign(&a_answer);            // g_a = sum_i a_i * u_i + \alpha + r\delta
+    a_answer.mul_assign(s);               // s * sum_i a_i * u_i  = s*A
+    g_c.add_assign(&a_answer);            // g_c = rs\delta + \alpha*s + \beta*r + s*A
 
-    let mut b1_answer = b_g1_inputs.wait()?;
-    b1_answer.add_assign(&b_g1_aux.wait()?);
-    let mut b2_answer = b_g2_inputs.wait()?;
-    b2_answer.add_assign(&b_g2_aux.wait()?);
+    let mut b1_answer = b_g1_inputs.wait()?;  // sum_i a_i*v_i for inputs
+    b1_answer.add_assign(&b_g1_aux.wait()?);  // sum_i a_i*v_i for inputs and aux  // G1
+    let mut b2_answer = b_g2_inputs.wait()?;  // sum_i a_i*v_i for inputs
+    b2_answer.add_assign(&b_g2_aux.wait()?);  // sum_i a_i*v_i for inputs and aux  // G2
 
-    g_b.add_assign(&b2_answer);
-    b1_answer.mul_assign(r);
-    g_c.add_assign(&b1_answer);
-    g_c.add_assign(&h.wait()?);
-    g_c.add_assign(&l.wait()?);
+    g_b.add_assign(&b2_answer);  // g_b = \beta + s \delta + sum_i a_i*v_i
+    b1_answer.mul_assign(r);     // r * sum_i a_i*v_i = r*B
+    g_c.add_assign(&b1_answer);  // g_c = rs\delta + \alpha*s + \beta*r + s*A + r*B
+    g_c.add_assign(&h.wait()?);  // g_c = rs\delta + \alpha*s + \beta*r + s*A + r*B + h
+    g_c.add_assign(&l.wait()?);  // g_c = rs\delta + \alpha*s + \beta*r + s*A + r*B + h + l
 
     Ok(Proof {
         a: g_a.into_affine(),

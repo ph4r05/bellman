@@ -16,6 +16,9 @@ pub trait SourceBuilder<G: CurveAffine>: Send + Sync + 'static + Clone {
     fn new(self) -> Self::Source;
 }
 
+/// ph: vector of points, counter.
+/// with each add_assign_mixed(), to = to + self.0[self.1++], where self.0 = vct, self.1 = counter
+///
 /// A source of bases, like an iterator.
 pub trait Source<G: CurveAffine> {
     /// Parses the element from the source. Fails if the point is at infinity.
@@ -145,6 +148,8 @@ impl DensityTracker {
     }
 }
 
+/// acc = l1G1 + l2G2 + l3G3, where G_i = bases, l_i = exponents
+/// c = max(3, ln(|exponents|))
 fn multiexp_inner<Q, D, G, S>(
     pool: &Worker,
     bases: S,
